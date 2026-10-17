@@ -3,7 +3,7 @@
 const SH = {
   Users: ['id', 'username', 'hash', 'toko'],
   Barang: ['id', 'nama', 'harga', 'modal', 'stok', 'min'],
-  Transaksi: ['id', 'waktu', 'items', 'total', 'bayar', 'kembali'],
+  Transaksi: ['id', 'waktu', 'items', 'total', 'bayar', 'kembali', 'customer', 'hp'],
   Keuangan: ['id', 'tanggal', 'jenis', 'ket', 'jumlah'],
   Pengaturan: ['key', 'value']
 };
@@ -16,6 +16,10 @@ function sheet(n) {
     s.getRange(1, 1, 1, SH[n].length).setValues([SH[n]]).setFontWeight('bold');
     s.getRange('A:Z').setNumberFormat('@'); // simpan sebagai teks agar tanggal tidak berubah
     s.setFrozenRows(1);
+  } else if (s.getLastColumn() < SH[n].length) {
+    // migrasi otomatis: sheet lama ditambah kolom baru (mis. customer & hp)
+    s.getRange(1, 1, 1, SH[n].length).setValues([SH[n]]).setFontWeight('bold');
+    s.getRange('A:Z').setNumberFormat('@');
   }
   return s;
 }
