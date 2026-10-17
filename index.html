@@ -60,7 +60,7 @@ details{border-bottom:1px dashed var(--line);padding:4px 0}summary{cursor:pointe
 .cartbar.show{display:flex}
 #toast{position:fixed;bottom:calc(var(--bn) + 84px);left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;z-index:60;display:none;max-width:90vw;text-align:center}
 #ov{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50;display:flex;align-items:center;justify-content:center;padding:16px}
-#ov>div{background:var(--card);border:2px solid var(--bd);border-radius:12px;padding:18px;max-width:380px;width:100%}
+#ov>div{background:var(--card);border:2px solid var(--bd);border-radius:12px;padding:18px;max-width:380px;width:100%;max-height:92dvh;overflow:auto}
 .login{max-width:400px;margin:6vh auto;padding:0 16px}.login h1{font-size:36px;font-weight:800;margin:0 0 4px}
 .login h1 span{background:var(--hi);color:var(--hit);padding:0 8px;border-radius:6px}
 .tabs{display:flex;gap:6px;margin-bottom:10px}.tabs button{flex:1}.tabs .on{background:var(--pri);color:var(--prit)}
@@ -89,9 +89,9 @@ details{border-bottom:1px dashed var(--line);padding:4px 0}summary{cursor:pointe
 /* ====== PENGATURAN: isi dengan URL Web App Apps Script. Kosong = mode lokal (demo, data di browser) ====== */
 const API_URL='https://script.google.com/macros/s/AKfycbx6pAJDvO_pq-GXCR7RPvO5cjN9cUYUBhfptjbsj1F9vD59RHmE4fKnpOKeb3X2FLEe/exec';
 
-const SH={Users:['id','username','hash','toko'],Barang:['id','nama','harga','modal','stok','min'],Transaksi:['id','waktu','items','total','bayar','kembali'],Keuangan:['id','tanggal','jenis','ket','jumlah'],Pengaturan:['key','value']};
+const SH={Users:['id','username','hash','toko'],Barang:['id','nama','harga','modal','stok','min'],Transaksi:['id','waktu','items','total','bayar','kembali','customer','hp'],Keuangan:['id','tanggal','jenis','ket','jumlah'],Pengaturan:['key','value']};
 const NUM={Barang:['harga','modal','stok','min'],Transaksi:['total','bayar','kembali'],Keuangan:['jumlah']};
-let D={},U=null,cart={},payVal='',tab='kasir',mode='in',Q=Promise.resolve();
+let D={},U=null,cart={},payVal='',custName='',custHp='',tab='kasir',mode='in',Q=Promise.resolve();
 const $=s=>document.querySelector(s),V={};
 const rp=n=>'Rp'+Math.round(n||0).toLocaleString('id-ID');
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
@@ -155,7 +155,7 @@ function start(){
 function go(t){tab=t;scrollTo(0,0);document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.id=='t_'+t));V[t]()}
 
 /* ---------- Kasir ---------- */
-V.kasir=()=>{cart={};payVal='';$('#v').innerHTML=`<div class=kasir><section class=card><h2>Pilih barang</h2><input id=q type=search placeholder="Cari barang..." oninput=drawP()><div id=P class=grid></div></section><section class=cartp id=cartp><div class=row style="margin-bottom:8px"><h2 style="margin:0">Keranjang</h2><button class="s closeb" onclick=cartT(false)>Tutup</button></div><div id=C></div></section></div><button class="p cartbar" id=cb onclick=cartT(true)></button>`;drawP();drawC()};
+V.kasir=()=>{cart={};payVal='';custName='';custHp='';$('#v').innerHTML=`<div class=kasir><section class=card><h2>Pilih barang</h2><input id=q type=search placeholder="Cari barang..." oninput=drawP()><div id=P class=grid></div></section><section class=cartp id=cartp><div class=row style="margin-bottom:8px"><h2 style="margin:0">Keranjang</h2><button class="s closeb" onclick=cartT(false)>Tutup</button></div><div id=C></div></section></div><button class="p cartbar" id=cb onclick=cartT(true)></button>`;drawP();drawC()};
 const cartT=o=>$('#cartp').classList.toggle('open',o);
 const qp=n=>{payVal=String(n||total());drawC()};
 function drawP(){
@@ -169,6 +169,7 @@ function drawC(){
   const e=Object.entries(cart);
   $('#C').innerHTML=(e.length?e.map(([id,q])=>{const b=bar(id);return`<div class=row style="margin-bottom:8px"><div>${esc(b.nama)}<br><small class=mut>${rp(b.harga)}</small></div><div class="qty s"><button onclick="setQ('${id}',${q-1})">-</button><input type=number value=${q} onchange="setQ('${id}',this.value)"><button onclick="setQ('${id}',${q+1})">+</button></div><b class="s" style="min-width:80px;text-align:right">${rp(q*b.harga)}</b></div>`}).join(''):'<p class=empty>Ketuk barang untuk menambah.</p>')+
   `<hr style="border:0;border-top:1px solid var(--line)"><div class=row><span>Total</span><span class=big style="text-align:right">${rp(total())}</span></div>
+  <label>Nama customer (opsional)</label><input id=cn value="${esc(custName)}" oninput="custName=this.value" placeholder="Nama pembeli" autocomplete=off><label>No. HP / WhatsApp (opsional)</label><input id=ch type=tel inputmode=tel value="${esc(custHp)}" oninput="custHp=this.value" placeholder="08123456789" autocomplete=off>
   <label>Uang diterima</label><input id=pay type=number inputmode=numeric value="${payVal}" oninput="payVal=this.value;calcK()"><div class=chips>${[0,10000,20000,50000,100000].map(n=>`<button onclick="qp(${n})">${n?rp(n):'Uang pas'}</button>`).join('')}</div>
   <div class=row style="margin:10px 0"><span>Kembalian</span><b id=kb style="text-align:right"></b></div><button class=p style="width:100%" onclick=bayar() ${e.length?'':'disabled'}>Simpan transaksi</button>`;calcK();
   const n=e.reduce((a,x)=>a+x[1],0),cb=$('#cb');if(cb){cb.classList.toggle('show',n>0);cb.innerHTML=`<span>${n} barang</span><span>${rp(total())} · Bayar ›</span>`}
@@ -176,10 +177,36 @@ function drawC(){
 function calcK(){const k=(Number(payVal)||0)-total();const el=$('#kb');if(el){el.textContent=payVal===''?'-':(k<0?'Kurang '+rp(-k):rp(k));el.className=k<0?'bad':''}}
 function bayar(){
   const t=total(),p=Number(payVal)||0;if(p<t)return toast('Uang diterima kurang '+rp(t-p));
+  const hp=normHp(custHp);if(custHp.trim()&&!hp)return toast('Nomor HP tidak valid');
   const its=Object.entries(cart).map(([id,qty])=>{const b=bar(id);return{id,nama:b.nama,harga:b.harga,modal:b.modal,qty}});
-  upsert('Transaksi',{id:'TRX-'+uid().toUpperCase(),waktu:new Date().toISOString(),items:JSON.stringify(its),total:t,bayar:p,kembali:p-t});
+  const trx={id:'TRX-'+uid().toUpperCase(),waktu:new Date().toISOString(),items:JSON.stringify(its),total:t,bayar:p,kembali:p-t,customer:custName.trim(),hp};
+  upsert('Transaksi',trx);
   its.forEach(i=>{const b=bar(i.id);upsert('Barang',{...b,stok:b.stok-i.qty})});
   toast('Tersimpan. Kembalian '+rp(p-t));V.kasir();
+  if(trx.customer||trx.hp)invDlg(trx.id);
+}
+
+/* ---------- Invoice & WhatsApp ---------- */
+function normHp(s){
+  let n=String(s||'').replace(/\D/g,'');if(!n)return'';
+  if(n.startsWith('0'))n='62'+n.slice(1);else if(n.startsWith('8'))n='62'+n;
+  return/^62\d{8,13}$/.test(n)?n:'';
+}
+function invText(t){
+  const L=items(t).map((i,k)=>`${k+1}. ${i.nama} ${i.qty} x ${rp(i.harga)} = ${rp(i.qty*i.harga)}`);
+  const tk=cfg('toko')||U.toko,al=cfg('alamat');
+  return [`*INVOICE ${tk}*`,al,'',`No: ${t.id}`,`Tanggal: ${new Date(t.waktu).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'})}`,t.customer?`Kepada: ${t.customer}`:'','','Rincian:',...L,'',`*Total yang harus dibayar: ${rp(t.total)}*`,`Dibayar: ${rp(t.bayar)}`,t.kembali>0?`Kembali: ${rp(t.kembali)}`:'','Status: LUNAS','','Terima kasih sudah berbelanja 🙏']
+    .filter((x,i,a)=>x!==''||(i>0&&a[i-1]!=='')).join('\n');
+}
+function invDlg(id){
+  const t=D.Transaksi.find(x=>x.id==id);if(!t)return;
+  ovl(`<h3>Invoice ${esc(t.id)}</h3><pre style="white-space:pre-wrap;font:13px/1.4 'DM Mono',monospace;background:var(--bg);padding:10px;border-radius:8px;max-height:40dvh;overflow:auto;margin:0">${esc(invText(t))}</pre><label>No. WhatsApp customer</label><input id=wh type=tel inputmode=tel value="${esc(t.hp||'')}" placeholder="08123456789"><div class=row style="margin-top:14px"><button onclick=ovl()>Tutup</button><button class=p onclick="sendWA('${t.id}')">Kirim ke WhatsApp</button></div>`);
+}
+function sendWA(id){
+  const t=D.Transaksi.find(x=>x.id==id);if(!t)return;
+  const hp=normHp($('#wh').value);if(!hp)return toast('Isi nomor WhatsApp yang valid');
+  if(hp!=t.hp)upsert('Transaksi',{...t,hp});
+  window.open('https://wa.me/'+hp+'?text='+encodeURIComponent(invText(t)),'_blank');
 }
 
 /* ---------- Stok ---------- */
@@ -232,10 +259,10 @@ function saveU(){const j=Number(um.value);if(!(j>0)||!uk.value.trim())return toa
 function delU(id){del('Keuangan',id);V.uang()}
 
 /* ---------- Riwayat ---------- */
-V.riwayat=()=>{$('#v').innerHTML=`<div class=card><h2>Riwayat transaksi</h2><input id=rq placeholder="Cari nomor transaksi atau nama barang..." oninput=drawR()><div id=RL></div></div>`;drawR()};
+V.riwayat=()=>{$('#v').innerHTML=`<div class=card><h2>Riwayat transaksi</h2><input id=rq placeholder="Cari nomor transaksi, customer, atau barang..." oninput=drawR()><div id=RL></div></div>`;drawR()};
 function drawR(){
-  const q=(rq.value||'').toLowerCase(),L=D.Transaksi.slice().reverse().filter(t=>!q||t.id.toLowerCase().includes(q)||items(t).some(i=>i.nama.toLowerCase().includes(q)));
-  RL.innerHTML=L.length?L.slice(0,100).map(t=>`<details><summary><span>${new Date(t.waktu).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'})}<br><small class=mut>${esc(t.id)}</small></span><b>${rp(t.total)}</b></summary><table><tr><th>Barang<th class=r>Qty<th class=r>Subtotal</tr>${items(t).map(i=>`<tr><td>${esc(i.nama)}<td class=r>${i.qty} × ${rp(i.harga)}<td class=r>${rp(i.qty*i.harga)}</tr>`).join('')}</table><p class=mut>Dibayar ${rp(t.bayar)} · Kembali ${rp(t.kembali)}</p><button class=d onclick="delT('${t.id}')">Hapus transaksi</button></details>`).join(''):'<p class=empty>Tidak ada transaksi.</p>';
+  const q=(rq.value||'').toLowerCase(),L=D.Transaksi.slice().reverse().filter(t=>!q||t.id.toLowerCase().includes(q)||(t.customer||'').toLowerCase().includes(q)||String(t.hp||'').includes(q)||items(t).some(i=>i.nama.toLowerCase().includes(q)));
+  RL.innerHTML=L.length?L.slice(0,100).map(t=>`<details><summary><span>${new Date(t.waktu).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'})}<br><small class=mut>${esc(t.id)}${t.customer?' · '+esc(t.customer):''}</small></span><b>${rp(t.total)}</b></summary><table><tr><th>Barang<th class=r>Qty<th class=r>Subtotal</tr>${items(t).map(i=>`<tr><td>${esc(i.nama)}<td class=r>${i.qty} × ${rp(i.harga)}<td class=r>${rp(i.qty*i.harga)}</tr>`).join('')}</table>${t.customer||t.hp?`<p>Customer: <b>${esc(t.customer||'-')}</b>${t.hp?' · '+esc(t.hp):''}</p>`:''}<p class=mut>Dibayar ${rp(t.bayar)} · Kembali ${rp(t.kembali)}</p><button class=p onclick="invDlg('${t.id}')">Kirim invoice WA</button> <button class=d onclick="delT('${t.id}')">Hapus transaksi</button></details>`).join(''):'<p class=empty>Tidak ada transaksi.</p>';
 }
 
 function ovl(h){let o=$('#ov');if(!h)return o&&o.remove();if(!o){o=document.createElement('div');o.id='ov';document.body.appendChild(o)}o.innerHTML='<div>'+h+'</div>'}
