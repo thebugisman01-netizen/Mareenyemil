@@ -89,15 +89,16 @@ details{border-bottom:1px dashed var(--line);padding:4px 0}summary{cursor:pointe
 /* ====== PENGATURAN: isi dengan URL Web App Apps Script. Kosong = mode lokal (demo, data di browser) ====== */
 const API_URL='https://script.google.com/macros/s/AKfycbx6pAJDvO_pq-GXCR7RPvO5cjN9cUYUBhfptjbsj1F9vD59RHmE4fKnpOKeb3X2FLEe/exec';
 
-const SH={Users:['id','username','hash','toko'],Barang:['id','nama','harga','modal','stok','min'],Transaksi:['id','waktu','items','total','bayar','kembali','customer','hp'],Keuangan:['id','tanggal','jenis','ket','jumlah'],Pengaturan:['key','value']};
+const SH={Users:['id','username','hash','toko','pin'],Barang:['id','nama','harga','modal','stok','min'],Transaksi:['id','waktu','items','total','bayar','kembali','customer','hp','metode','status','tgllunas'],Keuangan:['id','tanggal','jenis','ket','jumlah'],Pengaturan:['key','value']};
 const NUM={Barang:['harga','modal','stok','min'],Transaksi:['total','bayar','kembali'],Keuangan:['jumlah']};
-let D={},U=null,cart={},payVal='',custName='',custHp='',tab='kasir',mode='in',Q=Promise.resolve();
+let D={},U=null,cart={},payVal='',custName='',custHp='',payMeth='cash',payStat='lunas',tab='kasir',mode='in',Q=Promise.resolve();
 const $=s=>document.querySelector(s),V={};
 const rp=n=>'Rp'+Math.round(n||0).toLocaleString('id-ID');
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const today=()=>new Date().toLocaleDateString('sv');
 const dayOf=t=>new Date(t).toLocaleDateString('sv');
+const isBelum=t=>t.status=='belum',sisa=t=>isBelum(t)?Math.max(0,t.total-t.bayar):0,metLbl=t=>t.metode=='qris'?'QRIS':t.metode=='tf'?'Transfer':'Tunai';
 const items=t=>{try{return JSON.parse(t.items||'[]')}catch{return[]}};
 const cfg=k=>(D.Pengaturan.find(r=>r.key===k)||{}).value||'';
 const bar=id=>D.Barang.find(b=>b.id==id);
@@ -105,9 +106,14 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';cl
 
 /* ---------- Data layer (Google Sheets / lokal) ---------- */
 const persist=()=>localStorage.setItem('cj_db',JSON.stringify(D));
-function post(p){Q=Q.then(()=>fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(p)})).catch(()=>toast('Gagal sinkron ke spreadsheet'))}
+function post(p){Q=Q.then(()=>fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(p)}).then(r=>r.json()).then(j=>{if(!j.ok)throw 0})).catch(()=>toast('Gagal sinkron ke spreadsheet. Pastikan Code.gs sudah di-deploy versi terbaru'))}
 function upsert(sh,row){const k=SH[sh][0],i=D[sh].findIndex(r=>r[k]==row[k]);i<0?D[sh].push(row):D[sh][i]=row;persist();API_URL&&post({sheet:sh,row})}
 function del(sh,id){const k=SH[sh][0];D[sh]=D[sh].filter(r=>r[k]!=id);persist();API_URL&&post({op:'del',sheet:sh,row:{[k]:id}})}
+function bulk(sh,rows){
+  const k=SH[sh][0];
+  rows.forEach(r=>{(NUM[sh]||[]).forEach(c=>r[c]=Number(r[c])||0);const i=D[sh].findIndex(x=>x[k]==r[k]);i<0?D[sh].push(r):D[sh][i]=r});
+  persist();API_URL&&rows.length&&post({op:'bulk',sheet:sh,rows});
+}
 async function load(){
   let raw={};
   try{raw=API_URL?await (await fetch(API_URL)).json():JSON.parse(localStorage.getItem('cj_db')||'{}')}catch{toast('Gagal memuat data dari spreadsheet')}
@@ -117,7 +123,7 @@ async function hash(s){try{const b=await crypto.subtle.digest('SHA-256',new Text
 
 /* ---------- Login ---------- */
 function loginView(){
-  const f={in:['Masuk',''],up:['Daftar','<label>Nama toko</label><input id=lt>'],forgot:['Atur ulang sandi','<label>Nama toko (untuk verifikasi)</label><input id=lt>']}[mode];
+  const f={in:['Masuk',''],up:['Daftar','<label>Nama toko</label><input id=lt>'],forgot:['Atur ulang sandi','<label>Kode pemulihan</label><input id=lt autocomplete=off placeholder="XXXX-XXXX"><p class=mut style="font-size:13px;margin:6px 0 0">Akun lama yang belum punya kode: isi nama toko.</p>']}[mode];
   $('#app').innerHTML=`<div class=login><h1>Catat <span>Jualan</span></h1><p class=mut>Kasir, stok, dan uang toko dalam satu tempat.</p>
   <div class=tabs><button class="${mode=='in'?'on':''}" onclick="mode='in';loginView()">Masuk</button><button class="${mode=='up'?'on':''}" onclick="mode='up';loginView()">Daftar</button></div>
   <div class=card><label>Nama pengguna</label><input id=lu autocomplete=username>${f[1]}
@@ -125,21 +131,35 @@ function loginView(){
   <p><button class=p style="width:100%" onclick="auth()">${f[0]}</button></p>
   ${mode=='in'?'<button style="width:100%;border:0;color:var(--mut)" onclick="mode=\'forgot\';loginView()">Lupa sandi?</button>':''}</div></div>`;
 }
+let newCode='';
 async function auth(){
   const un=$('#lu').value.trim().toLowerCase(),pw=$('#lp').value,toko=$('#lt')?.value.trim();
   if(!un||pw.length<4)return toast('Isi nama pengguna dan sandi (minimal 4 karakter)');
   const h=await hash(pw),u=D.Users.find(x=>x.username==un);
   if(mode=='up'){
     if(u)return toast('Nama pengguna sudah dipakai');if(!toko)return toast('Isi nama toko');
-    U={id:uid(),username:un,hash:h,toko};upsert('Users',U);if(!cfg('toko'))upsert('Pengaturan',{key:'toko',value:toko});
+    newCode=genCode();U={id:uid(),username:un,hash:h,toko,pin:await hash('pin:'+newCode)};upsert('Users',U);if(!cfg('toko'))upsert('Pengaturan',{key:'toko',value:toko});
   }else if(mode=='forgot'){
-    if(!u||u.toko.toLowerCase()!=(toko||'').toLowerCase())return toast('Nama pengguna atau nama toko tidak cocok');
+    if(!u)return toast('Nama pengguna atau kode pemulihan tidak cocok');
+    const ok=u.pin?(await hash('pin:'+normCode(toko)))==u.pin:u.toko.toLowerCase()==(toko||'').toLowerCase();
+    if(!ok)return toast(u.pin?'Nama pengguna atau kode pemulihan tidak cocok':'Nama pengguna atau nama toko tidak cocok');
     U={...u,hash:h};upsert('Users',U);
   }else{
     if(!u||u.hash!=h)return toast('Nama pengguna atau sandi salah');U=u;
   }
-  localStorage.setItem('cj_u',U.id);start();
+  localStorage.setItem('cj_u',U.id);
+  if(newCode){const c=newCode;newCode='';start();showCode(c)}else{start();if(!U.pin)offerCode()}
 }
+/* kode pemulihan: acak, hanya hash-nya yang disimpan */
+function genCode(){const A='ABCDEFGHJKMNPQRSTUVWXYZ23456789',r=crypto.getRandomValues(new Uint8Array(8));return[...r].map(x=>A[x%A.length]).join('')}
+const normCode=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+function showCode(c){
+  const f=c.slice(0,4)+'-'+c.slice(4);
+  ovl(`<h3>Kode pemulihan Anda</h3><p class=big style="text-align:center;letter-spacing:.08em">${f}</p><p>Catat atau foto kode ini sekarang. Kode hanya ditampilkan sekali dan tidak bisa dilihat lagi. Dipakai di menu <b>Lupa sandi?</b> saat login.</p><div class=row style="margin-top:14px"><button onclick="navigator.clipboard&&navigator.clipboard.writeText('${f}');toast('Kode disalin')">Salin</button><button class=p onclick=ovl()>Sudah saya simpan</button></div>`);
+}
+function offerCode(){ovl(`<h3>Buat kode pemulihan</h3><p>Kode ini dipakai kalau Anda lupa sandi. Tanpa kode, siapa pun yang tahu nama pengguna dan nama toko bisa mengganti sandi.</p><div class=row style="margin-top:14px"><button onclick=ovl()>Nanti</button><button class=p onclick=makeCode()>Buat sekarang</button></div>`)}
+async function makeCode(){const c=genCode();U={...U,pin:await hash('pin:'+c)};upsert('Users',U);showCode(c)}
+async function regenCode(){if(await hash($('#cp').value)!=U.hash)return toast('Sandi saat ini salah');makeCode()}
 function logout(){localStorage.removeItem('cj_u');U=null;mode='in';loginView()}
 
 /* ---------- Shell ---------- */
@@ -155,7 +175,7 @@ function start(){
 function go(t){tab=t;scrollTo(0,0);document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.id=='t_'+t));V[t]()}
 
 /* ---------- Kasir ---------- */
-V.kasir=()=>{cart={};payVal='';custName='';custHp='';$('#v').innerHTML=`<div class=kasir><section class=card><h2>Pilih barang</h2><input id=q type=search placeholder="Cari barang..." oninput=drawP()><div id=P class=grid></div></section><section class=cartp id=cartp><div class=row style="margin-bottom:8px"><h2 style="margin:0">Keranjang</h2><button class="s closeb" onclick=cartT(false)>Tutup</button></div><div id=C></div></section></div><button class="p cartbar" id=cb onclick=cartT(true)></button>`;drawP();drawC()};
+V.kasir=()=>{cart={};payVal='';custName='';custHp='';payMeth='cash';payStat='lunas';$('#v').innerHTML=`<div class=kasir><section class=card><h2>Pilih barang</h2><input id=q type=search placeholder="Cari barang..." oninput=drawP()><div id=P class=grid></div></section><section class=cartp id=cartp><div class=row style="margin-bottom:8px"><h2 style="margin:0">Keranjang</h2><button class="s closeb" onclick=cartT(false)>Tutup</button></div><div id=C></div></section></div><button class="p cartbar" id=cb onclick=cartT(true)></button>`;drawP();drawC()};
 const cartT=o=>$('#cartp').classList.toggle('open',o);
 const qp=n=>{payVal=String(n||total());drawC()};
 function drawP(){
@@ -166,24 +186,38 @@ const total=()=>Object.entries(cart).reduce((s,[id,q])=>s+q*bar(id).harga,0);
 function add(id){const b=bar(id);if((cart[id]||0)>=b.stok)return toast('Stok '+b.nama+' tidak cukup');cart[id]=(cart[id]||0)+1;drawC()}
 function setQ(id,v){const b=bar(id);v=Math.floor(Number(v)||0);if(v>b.stok){v=b.stok;toast('Stok tersisa '+b.stok)}v<=0?delete cart[id]:cart[id]=v;drawC()}
 function drawC(){
-  const e=Object.entries(cart);
+  const e=Object.entries(cart),lunas=payStat=='lunas',qris=payMeth=='qris';
   $('#C').innerHTML=(e.length?e.map(([id,q])=>{const b=bar(id);return`<div class=row style="margin-bottom:8px"><div>${esc(b.nama)}<br><small class=mut>${rp(b.harga)}</small></div><div class="qty s"><button onclick="setQ('${id}',${q-1})">-</button><input type=number value=${q} onchange="setQ('${id}',this.value)"><button onclick="setQ('${id}',${q+1})">+</button></div><b class="s" style="min-width:80px;text-align:right">${rp(q*b.harga)}</b></div>`}).join(''):'<p class=empty>Ketuk barang untuk menambah.</p>')+
   `<hr style="border:0;border-top:1px solid var(--line)"><div class=row><span>Total</span><span class=big style="text-align:right">${rp(total())}</span></div>
-  <label>Nama customer (opsional)</label><input id=cn value="${esc(custName)}" oninput="custName=this.value" placeholder="Nama pembeli" autocomplete=off><label>No. HP / WhatsApp (opsional)</label><input id=ch type=tel inputmode=tel value="${esc(custHp)}" oninput="custHp=this.value" placeholder="08123456789" autocomplete=off>
-  <label>Uang diterima</label><input id=pay type=number inputmode=numeric value="${payVal}" oninput="payVal=this.value;calcK()"><div class=chips>${[0,10000,20000,50000,100000].map(n=>`<button onclick="qp(${n})">${n?rp(n):'Uang pas'}</button>`).join('')}</div>
-  <div class=row style="margin:10px 0"><span>Kembalian</span><b id=kb style="text-align:right"></b></div><button class=p style="width:100%" onclick=bayar() ${e.length?'':'disabled'}>Simpan transaksi</button>`;calcK();
+  <label>Nama customer${lunas?' (opsional)':''}</label><input id=cn value="${esc(custName)}" oninput="custName=this.value" placeholder="Nama pembeli" autocomplete=off><label>No. HP / WhatsApp (opsional)</label><input id=ch type=tel inputmode=tel value="${esc(custHp)}" oninput="custHp=this.value" placeholder="08123456789" autocomplete=off>
+  <label>Status pembayaran</label><div class=tabs style="margin:0"><button class="${lunas?'on':''}" onclick="setPS('lunas')">Lunas</button><button class="${lunas?'':'on'}" onclick="setPS('belum')">Belum lunas</button></div>
+  <label>Metode pembayaran</label><div class=tabs style="margin:0"><button class="${payMeth=='cash'?'on':''}" onclick="setPM('cash')">Tunai</button><button class="${payMeth=='tf'?'on':''}" onclick="setPM('tf')">Transfer</button><button class="${qris?'on':''}" onclick="setPM('qris')">QRIS</button></div>
+  ${qris?qrisBox():payMeth=='tf'?tfBox():''}
+  ${lunas&&payMeth!='cash'?`<p class=mut style="font-size:13px;margin:10px 0">Pembayaran ${metLbl({metode:payMeth})} dicatat pas sesuai total.</p>`:`<label>${lunas?'Uang diterima':'Uang muka / DP (opsional)'}</label><input id=pay type=number inputmode=numeric value="${payVal}" oninput="payVal=this.value;calcK()">${lunas?`<div class=chips>${[0,10000,20000,50000,100000].map(n=>`<button onclick="qp(${n})">${n?rp(n):'Uang pas'}</button>`).join('')}</div>`:''}
+  <div class=row style="margin:10px 0"><span>${lunas?'Kembalian':'Sisa tagihan'}</span><b id=kb style="text-align:right"></b></div>`}
+  <button class=p style="width:100%" onclick=bayar() ${e.length?'':'disabled'}>Simpan transaksi</button>`;calcK();
   const n=e.reduce((a,x)=>a+x[1],0),cb=$('#cb');if(cb){cb.classList.toggle('show',n>0);cb.innerHTML=`<span>${n} barang</span><span>${rp(total())} · Bayar ›</span>`}
 }
-function calcK(){const k=(Number(payVal)||0)-total();const el=$('#kb');if(el){el.textContent=payVal===''?'-':(k<0?'Kurang '+rp(-k):rp(k));el.className=k<0?'bad':''}}
+function calcK(){
+  const el=$('#kb');if(!el)return;const v=Number(payVal)||0,t=total();
+  if(payStat=='lunas'){const k=v-t;el.textContent=payVal===''?'-':(k<0?'Kurang '+rp(-k):rp(k));el.className=k<0?'bad':''}
+  else{el.textContent=rp(Math.max(0,t-v));el.className=v>=t&&t>0?'bad':''}
+}
+const tfBox=()=>cfg('norek')?`<div style="margin:10px 0;padding:10px;border:2px solid var(--bd);border-radius:8px"><b>${esc(cfg('bank')||'Rekening')}</b><br><span class=big>${esc(cfg('norek'))}</span>${cfg('atasnama')?`<br>a.n. ${esc(cfg('atasnama'))}`:''}<div class=mut style="font-size:13px">Transfer sebesar ${rp(total())}</div></div>`:'<p class=mut style="font-size:13px;margin:10px 0">Data rekening belum diisi. Isi di menu Pengaturan.</p>';
+const setPS=s=>{payStat=s;payVal='';drawC()},setPM=m=>{payMeth=m;drawC()};
+const qrisBox=()=>cfg('qris')?`<div style="text-align:center;margin:10px 0"><img src="${cfg('qris')}" alt="QRIS" style="width:240px;max-width:100%;border:2px solid var(--bd);border-radius:8px;background:#fff"><div class=mut style="font-size:13px">Scan untuk membayar ${rp(total())}</div></div>`:'<p class=mut style="font-size:13px;margin:10px 0">Gambar QRIS belum diunggah. Unggah di menu Pengaturan.</p>';
 function bayar(){
-  const t=total(),p=Number(payVal)||0;if(p<t)return toast('Uang diterima kurang '+rp(t-p));
+  const t=total(),lunas=payStat=='lunas',qris=payMeth=='qris',nm=custName.trim();
   const hp=normHp(custHp);if(custHp.trim()&&!hp)return toast('Nomor HP tidak valid');
+  let p=Math.max(0,Number(payVal)||0);
+  if(lunas){if(payMeth!='cash')p=t;else if(p<t)return toast('Uang diterima kurang '+rp(t-p))}
+  else{if(!nm)return toast('Isi nama customer untuk transaksi belum lunas');if(p>=t)return toast('Uang muka harus kurang dari total, atau pilih Lunas')}
   const its=Object.entries(cart).map(([id,qty])=>{const b=bar(id);return{id,nama:b.nama,harga:b.harga,modal:b.modal,qty}});
-  const trx={id:'TRX-'+uid().toUpperCase(),waktu:new Date().toISOString(),items:JSON.stringify(its),total:t,bayar:p,kembali:p-t,customer:custName.trim(),hp};
+  const trx={id:'TRX-'+uid().toUpperCase(),waktu:new Date().toISOString(),items:JSON.stringify(its),total:t,bayar:p,kembali:lunas?p-t:0,customer:nm,hp,metode:payMeth,status:lunas?'lunas':'belum',tgllunas:''};
   upsert('Transaksi',trx);
   its.forEach(i=>{const b=bar(i.id);upsert('Barang',{...b,stok:b.stok-i.qty})});
-  toast('Tersimpan. Kembalian '+rp(p-t));V.kasir();
-  if(trx.customer||trx.hp)invDlg(trx.id);
+  toast(lunas?(payMeth!='cash'?'Tersimpan. Lunas via '+metLbl({metode:payMeth}):'Tersimpan. Kembalian '+rp(p-t)):'Tersimpan sebagai belum lunas. Sisa '+rp(t-p));V.kasir();
+  if(nm||hp)invDlg(trx.id);
 }
 
 /* ---------- Invoice & WhatsApp ---------- */
@@ -192,15 +226,34 @@ function normHp(s){
   if(n.startsWith('0'))n='62'+n.slice(1);else if(n.startsWith('8'))n='62'+n;
   return/^62\d{8,13}$/.test(n)?n:'';
 }
+const qrisLink=t=>API_URL&&cfg('qris')?API_URL+'?qris=1&n='+sisa(t):'';
 function invText(t){
   const L=items(t).map((i,k)=>`${k+1}. ${i.nama} ${i.qty} x ${rp(i.harga)} = ${rp(i.qty*i.harga)}`);
-  const tk=cfg('toko')||U.toko,al=cfg('alamat');
-  return [`*INVOICE ${tk}*`,al,'',`No: ${t.id}`,`Tanggal: ${new Date(t.waktu).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'})}`,t.customer?`Kepada: ${t.customer}`:'','','Rincian:',...L,'',`*Total yang harus dibayar: ${rp(t.total)}*`,`Dibayar: ${rp(t.bayar)}`,t.kembali>0?`Kembali: ${rp(t.kembali)}`:'','Status: LUNAS','','Terima kasih sudah berbelanja 🙏']
-    .filter((x,i,a)=>x!==''||(i>0&&a[i-1]!=='')).join('\n');
+  const tk=cfg('toko')||U.toko,al=cfg('alamat'),bl=isBelum(t);
+  return [`*${bl?'TAGIHAN':'INVOICE'} ${tk}*`,al||null,'',`No: ${t.id}`,`Tanggal: ${new Date(t.waktu).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'})}`,t.customer?`Kepada: ${t.customer}`:null,'','Rincian:',...L,'',
+    bl?`Total tagihan: ${rp(t.total)}`:`*Total yang harus dibayar: ${rp(t.total)}*`,
+    bl?`Sudah dibayar: ${rp(t.bayar)}`:`Dibayar: ${rp(t.bayar)}`,
+    !bl&&t.kembali>0?`Kembali: ${rp(t.kembali)}`:null,
+    bl?`*Sisa yang harus dibayar: ${rp(sisa(t))}*`:null,
+    `Metode: ${metLbl(t)}`,`Status: ${bl?'BELUM LUNAS':'LUNAS'}`,
+    bl&&t.metode=='tf'&&cfg('norek')?`Transfer ke: ${cfg('bank')} ${cfg('norek')}${cfg('atasnama')?' a.n. '+cfg('atasnama'):''}`:null,
+    bl&&t.metode=='qris'?(qrisLink(t)?`Bayar via QRIS: ${qrisLink(t)}`:'Pembayaran via QRIS, silakan scan gambar QRIS yang dikirim terpisah.'):null,
+    '','Terima kasih sudah berbelanja 🙏']
+    .filter(x=>x!==null).filter((x,i,a)=>x!==''||(i>0&&a[i-1]!=='')).join('\n');
 }
 function invDlg(id){
   const t=D.Transaksi.find(x=>x.id==id);if(!t)return;
-  ovl(`<h3>Invoice ${esc(t.id)}</h3><pre style="white-space:pre-wrap;font:13px/1.4 'DM Mono',monospace;background:var(--bg);padding:10px;border-radius:8px;max-height:40dvh;overflow:auto;margin:0">${esc(invText(t))}</pre><label>No. WhatsApp customer</label><input id=wh type=tel inputmode=tel value="${esc(t.hp||'')}" placeholder="08123456789"><div class=row style="margin-top:14px"><button onclick=ovl()>Tutup</button><button class=p onclick="sendWA('${t.id}')">Kirim ke WhatsApp</button></div>`);
+  const q=isBelum(t)&&cfg('qris');
+  ovl(`<h3>${isBelum(t)?'Tagihan':'Invoice'} ${esc(t.id)}</h3><pre style="white-space:pre-wrap;font:13px/1.4 'DM Mono',monospace;background:var(--bg);padding:10px;border-radius:8px;max-height:40dvh;overflow:auto;margin:0">${esc(invText(t))}</pre><label>No. WhatsApp customer</label><input id=wh type=tel inputmode=tel value="${esc(t.hp||'')}" placeholder="08123456789"><div class=row style="margin-top:14px"><button onclick=ovl()>Tutup</button><button class=p onclick="sendWA('${t.id}')">Kirim ke WhatsApp</button></div>${q?`<button style="width:100%;margin-top:8px" onclick=shareQris()>Bagikan gambar QRIS</button><p class=mut style="font-size:12px;margin:6px 0 0">${qrisLink(t)?'Pesan sudah berisi tautan halaman QRIS. Tombol ini opsional untuk mengirim gambarnya langsung.':'Tautan WhatsApp hanya bisa mengirim teks, jadi gambar QRIS dikirim lewat tombol ini.'}</p>`:''}`);
+}
+function qrisFile(){
+  const u=cfg('qris');if(!u)return null;
+  try{const m=u.match(/^data:(.*?);base64,(.*)$/),b=atob(m[2]),a=new Uint8Array(b.length);for(let i=0;i<b.length;i++)a[i]=b.charCodeAt(i);return new File([a],'qris.'+(m[1].includes('png')?'png':'jpg'),{type:m[1]})}catch{return null}
+}
+function shareQris(){
+  const f=qrisFile();if(!f)return toast('Unggah gambar QRIS di Pengaturan');
+  if(navigator.canShare&&navigator.canShare({files:[f]}))navigator.share({files:[f],text:'QRIS pembayaran '+(cfg('toko')||U.toko)}).catch(()=>{});
+  else{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click();toast('Gambar QRIS diunduh. Lampirkan manual di chat WhatsApp.')}
 }
 function sendWA(id){
   const t=D.Transaksi.find(x=>x.id==id);if(!t)return;
@@ -244,7 +297,10 @@ function delB(id){if(confirm('Hapus barang ini? Riwayat transaksi tidak ikut ter
 function daily(){
   const m={};const g=d=>m[d]=m[d]||{masuk:0,keluar:0};
   D.Keuangan.forEach(k=>g(k.tanggal)[k.jenis=='masuk'?'masuk':'keluar']+=k.jumlah);
-  D.Transaksi.forEach(t=>g(dayOf(t.waktu)).masuk+=t.total);
+  D.Transaksi.forEach(t=>{const d=dayOf(t.waktu);
+    if(isBelum(t))g(d).masuk+=t.bayar;
+    else if(t.tgllunas){g(d).masuk+=t.bayar;g(t.tgllunas).masuk+=t.total-t.bayar}
+    else g(d).masuk+=t.total});
   let s=0;return Object.keys(m).sort().map(d=>{s+=m[d].masuk-m[d].keluar;return{d,...m[d],saldo:s}});
 }
 V.uang=()=>{
@@ -259,12 +315,20 @@ function saveU(){const j=Number(um.value);if(!(j>0)||!uk.value.trim())return toa
 function delU(id){del('Keuangan',id);V.uang()}
 
 /* ---------- Riwayat ---------- */
-V.riwayat=()=>{$('#v').innerHTML=`<div class=card><h2>Riwayat transaksi</h2><input id=rq placeholder="Cari nomor transaksi, customer, atau barang..." oninput=drawR()><div id=RL></div></div>`;drawR()};
+V.riwayat=()=>{$('#v').innerHTML=`<div class=card><h2>Riwayat transaksi</h2><div class=row><input id=rq placeholder="Cari nomor transaksi, customer, atau barang..." oninput=drawR()><select id=rf class=s style="width:auto" onchange=drawR()><option value=all>Semua<option value=belum>Belum lunas<option value=lunas>Lunas</select></div><div id=RL></div></div>`;drawR()};
 function drawR(){
-  const q=(rq.value||'').toLowerCase(),L=D.Transaksi.slice().reverse().filter(t=>!q||t.id.toLowerCase().includes(q)||(t.customer||'').toLowerCase().includes(q)||String(t.hp||'').includes(q)||items(t).some(i=>i.nama.toLowerCase().includes(q)));
-  RL.innerHTML=L.length?L.slice(0,100).map(t=>`<details><summary><span>${new Date(t.waktu).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'})}<br><small class=mut>${esc(t.id)}${t.customer?' · '+esc(t.customer):''}</small></span><b>${rp(t.total)}</b></summary><table><tr><th>Barang<th class=r>Qty<th class=r>Subtotal</tr>${items(t).map(i=>`<tr><td>${esc(i.nama)}<td class=r>${i.qty} × ${rp(i.harga)}<td class=r>${rp(i.qty*i.harga)}</tr>`).join('')}</table>${t.customer||t.hp?`<p>Customer: <b>${esc(t.customer||'-')}</b>${t.hp?' · '+esc(t.hp):''}</p>`:''}<p class=mut>Dibayar ${rp(t.bayar)} · Kembali ${rp(t.kembali)}</p><button class=p onclick="invDlg('${t.id}')">Kirim invoice WA</button> <button class=d onclick="delT('${t.id}')">Hapus transaksi</button></details>`).join(''):'<p class=empty>Tidak ada transaksi.</p>';
+  const q=(rq.value||'').toLowerCase(),f=rf.value,L=D.Transaksi.slice().reverse().filter(t=>(f=='all'||(f=='belum')==isBelum(t))&&(!q||t.id.toLowerCase().includes(q)||(t.customer||'').toLowerCase().includes(q)||String(t.hp||'').includes(q)||items(t).some(i=>i.nama.toLowerCase().includes(q))));
+  const piu=D.Transaksi.filter(isBelum).reduce((s,t)=>s+sisa(t),0);
+  RL.innerHTML=(piu>0?`<p class=mut style="margin:10px 0 0">Total belum diterima: <b class=bad>${rp(piu)}</b></p>`:'')+(L.length?L.slice(0,100).map(t=>`<details><summary><span>${new Date(t.waktu).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'})}<br><small class=mut>${esc(t.id)}${t.customer?' · '+esc(t.customer):''}</small></span><span style="text-align:right"><b>${rp(t.total)}</b>${isBelum(t)?`<br><span class=tag>Belum lunas · sisa ${rp(sisa(t))}</span>`:''}</span></summary><table><tr><th>Barang<th class=r>Qty<th class=r>Subtotal</tr>${items(t).map(i=>`<tr><td>${esc(i.nama)}<td class=r>${i.qty} × ${rp(i.harga)}<td class=r>${rp(i.qty*i.harga)}</tr>`).join('')}</table>${t.customer||t.hp?`<p>Customer: <b>${esc(t.customer||'-')}</b>${t.hp?' · '+esc(t.hp):''}</p>`:''}<p class=mut>${metLbl(t)} · ${isBelum(t)?'Sudah dibayar '+rp(t.bayar)+' · Sisa '+rp(sisa(t)):'Dibayar '+rp(t.bayar)+(t.kembali>0?' · Kembali '+rp(t.kembali):'')+(t.tgllunas?' · Dilunasi '+esc(t.tgllunas):'')}</p><div class=row style="flex-wrap:wrap;margin-top:8px"><button class=p onclick="invDlg('${t.id}')">${isBelum(t)?'Kirim tagihan WA':'Kirim invoice WA'}</button>${isBelum(t)?`<button onclick="lunasDlg('${t.id}')">Tandai lunas</button>`:''}<button class=d onclick="delT('${t.id}')">Hapus transaksi</button></div></details>`).join(''):'<p class=empty>Tidak ada transaksi.</p>');
 }
-
+function lunasDlg(id){
+  const t=D.Transaksi.find(x=>x.id==id);if(!t)return;
+  ovl(`<h3>Tandai sudah lunas?</h3><p>${esc(t.id)}${t.customer?' · '+esc(t.customer):''}<br>Sisa yang diterima: <b>${rp(sisa(t))}</b><br><span class=mut>Sisa tersebut dicatat sebagai pemasukan kas hari ini.</span></p><div class=row style="margin-top:14px"><button onclick=ovl()>Batal</button><button class=p onclick="doLunas('${id}')">Ya, sudah lunas</button></div>`);
+}
+function doLunas(id){
+  const t=D.Transaksi.find(x=>x.id==id);if(!t)return ovl();
+  upsert('Transaksi',{...t,status:'lunas',tgllunas:today()});ovl();toast('Transaksi ditandai lunas');drawR();
+}
 function ovl(h){let o=$('#ov');if(!h)return o&&o.remove();if(!o){o=document.createElement('div');o.id='ov';document.body.appendChild(o)}o.innerHTML='<div>'+h+'</div>'}
 function delT(id){
   const t=D.Transaksi.find(x=>x.id==id);if(!t)return;
@@ -281,26 +345,61 @@ let per=7;
 V.laporan=()=>{
   const cut=per?new Date(Date.now()-(per-1)*864e5).toLocaleDateString('sv'):'0000';
   const T=D.Transaksi.filter(t=>dayOf(t.waktu)>=cut),K=D.Keuangan.filter(k=>k.tanggal>=cut);
-  let omzet=0,hpp=0;const prod={};
+  let omzet=0,hpp=0;const piu=T.filter(isBelum).reduce((s,t)=>s+sisa(t),0);const prod={};
   T.forEach(t=>items(t).forEach(i=>{omzet+=i.qty*i.harga;hpp+=i.qty*i.modal;const p=prod[i.nama]=prod[i.nama]||{q:0,r:0};p.q+=i.qty;p.r+=i.qty*i.harga}));
-  const out=K.filter(k=>k.jenis=='keluar').reduce((s,k)=>s+k.jumlah,0),inn=K.filter(k=>k.jenis=='masuk').reduce((s,k)=>s+k.jumlah,0),net=omzet-hpp+inn-out;
+  const out=K.filter(k=>k.jenis=='keluar').reduce((s,k)=>s+k.jumlah,0),inn=K.filter(k=>k.jenis=='masuk').reduce((s,k)=>s+k.jumlah,0),net=omzet-hpp+inn-out-piu;
   const days=[...Array(7)].map((_,i)=>{const d=new Date(Date.now()-(6-i)*864e5).toLocaleDateString('sv');return{d,v:D.Transaksi.filter(t=>dayOf(t.waktu)==d).reduce((s,t)=>s+t.total,0)}}),mx=Math.max(1,...days.map(x=>x.v));
   const top=Object.entries(prod).sort((a,b)=>b[1].q-a[1].q).slice(0,5);
   $('#v').innerHTML=`<div class=card><h3>Penjualan 7 hari terakhir</h3><svg viewBox="0 0 700 220" style="width:100%"><g font-size="12" fill="currentColor" text-anchor="middle">${days.map((x,i)=>{const h=x.v/mx*150,xx=20+i*95;return`<rect x="${xx}" y="${180-h}" width="70" height="${h}" rx="5" fill="var(--pri)"/><text x="${xx+35}" y="${172-h}">${x.v?rp(x.v):''}</text><text x="${xx+35}" y="205" class=mut>${x.d.slice(5)}</text>`}).join('')}</g></svg></div>
   <div class=row style="margin-bottom:10px"><h2 style="margin:0">Ringkasan</h2><select class=s style="width:auto" onchange="per=Number(this.value);V.laporan()">${[[1,'Hari ini'],[7,'7 hari'],[30,'30 hari'],[0,'Semua']].map(o=>`<option value=${o[0]} ${o[0]==per?'selected':''}>${o[1]}</option>`).join('')}</select></div>
-  <div class=g2><div class=card><h3>Untung rugi</h3><table>${[['Penjualan',omzet],['Modal barang terjual',-hpp],['Pemasukan lain',inn],['Pengeluaran',-out]].map(r=>`<tr><td>${r[0]}<td class=r>${rp(r[1])}</tr>`).join('')}<tr><td><b>${net<0?'Rugi':'Untung'} bersih</b><td class="r ${net<0?'bad':'ok'}"><b>${rp(Math.abs(net))}</b></tr></table></div>
+  <div class=g2><div class=card><h3>Untung rugi</h3><table>${[['Penjualan',omzet],['Modal barang terjual',-hpp],['Pemasukan lain',inn],['Belum diterima (belum lunas)',-piu],['Pengeluaran',-out]].map(r=>`<tr><td>${r[0]}<td class=r>${rp(r[1])}</tr>`).join('')}<tr><td><b>${net<0?'Rugi':'Untung'} bersih</b><td class="r ${net<0?'bad':'ok'}"><b>${rp(Math.abs(net))}</b></tr></table></div>
   <div class=card><h3>Barang paling laku</h3>${top.length?`<table>${top.map(([n,p])=>`<tr><td>${esc(n)}<td class=r>${p.q} terjual<td class=r>${rp(p.r)}</tr>`).join('')}</table>`:'<p class=empty>Belum ada penjualan pada periode ini.</p>'}</div></div>`;
 };
 
 /* ---------- Pengaturan ---------- */
 V.set=()=>{$('#v').innerHTML=`<div class=g2><div class=card><h3>Profil toko</h3><label>Nama toko</label><input id=sn value="${esc(cfg('toko')||U.toko)}"><label>Alamat</label><input id=sa value="${esc(cfg('alamat'))}"><label>Tampilan</label><select id=st><option value=terang ${cfg('tema')!='gelap'?'selected':''}>Terang<option value=gelap ${cfg('tema')=='gelap'?'selected':''}>Gelap</select><p><button class=p onclick=saveS()>Simpan pengaturan</button></p></div>
-<div class=card><h3>Cadangan data</h3><p class=mut>Penyimpanan: <b>${API_URL?'Google Sheets':'Lokal di browser (demo)'}</b></p><p><button onclick=exportD()>Unduh cadangan (.json)</button></p><label>Pulihkan dari file cadangan</label><input type=file accept=.json onchange=importD(this)></div></div>`};
+<div class=card><h3>Keamanan akun</h3><p class=mut>Kode pemulihan: <b>${U.pin?'sudah dibuat':'belum dibuat'}</b></p><label>Sandi saat ini</label><input id=cp type=password autocomplete=current-password><p><button class=p onclick=regenCode()>${U.pin?'Buat kode pemulihan baru':'Buat kode pemulihan'}</button></p><p class=mut style="font-size:13px">Membuat kode baru membuat kode lama tidak berlaku.</p></div>
+<div class=card><h3>Transfer bank</h3><label>Nama bank</label><input id=bk value="${esc(cfg('bank'))}" placeholder="BCA / BRI / Mandiri"><label>Nomor rekening</label><input id=nr inputmode=numeric value="${esc(cfg('norek'))}"><label>Atas nama</label><input id=an value="${esc(cfg('atasnama'))}"><p><button class=p onclick=saveBank()>Simpan rekening</button></p></div>
+<div class=card><h3>Pembayaran QRIS</h3>${cfg('qris')?`<p style="text-align:center"><img src="${cfg('qris')}" alt="QRIS" style="width:220px;max-width:100%;border:2px solid var(--bd);border-radius:8px;background:#fff"></p>`:'<p class=mut>Belum ada gambar QRIS.</p>'}<label>Unggah gambar QRIS</label><input type=file accept="image/*" onchange="upQris(this)">${cfg('qris')?'<p><button class=d onclick=delQris()>Hapus QRIS</button></p>':''}<p class=mut style="font-size:13px">Gambar tampil di kasir saat memilih QRIS dan bisa dibagikan ke WhatsApp customer.</p></div>
+<div class=card><h3>Cadangan data</h3><p class=mut>Penyimpanan: <b>${API_URL?'Google Sheets':'Lokal di browser (demo)'}</b></p><p><button onclick=exportD()>Unduh cadangan (.json)</button></p><label>Pulihkan dari file cadangan</label><input type=file onchange=importD(this)></div></div>`};
+function saveBank(){upsert('Pengaturan',{key:'bank',value:bk.value.trim()});upsert('Pengaturan',{key:'norek',value:nr.value.trim()});upsert('Pengaturan',{key:'atasnama',value:an.value.trim()});toast('Rekening tersimpan')}
+function upQris(el){const f=el.files[0];if(!f)return;upQris2(f).finally(()=>{try{el.value=''}catch{}})}
+async function upQris2(f){
+  if(/pdf/i.test(f.type)||/\.pdf$/i.test(f.name))return toast('PDF tidak bisa dipakai. Screenshot QRIS lalu unggah sebagai JPG atau PNG');
+  let src=null,w=0,hh=0;
+  try{src=await createImageBitmap(f);w=src.width;hh=src.height}catch{
+    try{
+      const u=await new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result);r.onerror=no;r.readAsDataURL(f)});
+      src=await new Promise((ok,no)=>{const im=new Image();im.onload=()=>ok(im);im.onerror=no;im.src=u});w=src.naturalWidth;hh=src.naturalHeight;
+    }catch{src=null}
+  }
+  if(!src||!w||!hh)return toast('Format gambar tidak didukung ('+(f.type||f.name.split('.').pop()||'tidak dikenal')+', '+Math.round(f.size/1024)+' KB). Gunakan JPG atau PNG, misalnya screenshot QRIS.');
+  let s=520,q=.8,d='';
+  for(let k=0;k<6;k++){
+    const r=Math.min(1,s/Math.max(w,hh)),c=document.createElement('canvas');c.width=Math.round(w*r);c.height=Math.round(hh*r);
+    const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(src,0,0,c.width,c.height);
+    d=c.toDataURL('image/png');if(d.length>=45000)d=c.toDataURL('image/jpeg',q);
+    if(d.length<45000)break;s*=.88;q=Math.max(.55,q-.06)
+  }
+  if(d.length>=49000)return toast('Gambar terlalu besar, coba gambar QRIS yang lebih sederhana');
+  upsert('Pengaturan',{key:'qris',value:d});toast('QRIS tersimpan');V.set()
+}
+function delQris(){upsert('Pengaturan',{key:'qris',value:''});toast('QRIS dihapus');V.set()}
 function saveS(){upsert('Pengaturan',{key:'toko',value:sn.value.trim()});upsert('Pengaturan',{key:'alamat',value:sa.value.trim()});upsert('Pengaturan',{key:'tema',value:st.value});toast('Pengaturan tersimpan');start();go('set')}
 function exportD(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(D,null,1)],{type:'application/json'}));a.download='catat-jualan-'+today()+'.json';a.click()}
 function importD(el){
   const f=el.files[0];if(!f)return;const r=new FileReader();
-  r.onload=()=>{try{const o=JSON.parse(r.result);['Barang','Transaksi','Keuangan','Pengaturan'].forEach(sh=>(o[sh]||[]).forEach(x=>upsert(sh,x)));toast('Data berhasil dipulihkan');start();go('set')}catch{toast('File cadangan tidak valid')}};
-  r.readAsText(f);
+  r.onload=()=>{try{
+    const o=JSON.parse(r.result);if(!o||typeof o!='object')throw 0;
+    const have=new Set(D.Users.map(u=>u.id));let n=0;
+    ['Users','Barang','Transaksi','Keuangan','Pengaturan'].forEach(sh=>{
+      let rows=Array.isArray(o[sh])?o[sh]:[];if(sh=='Users')rows=rows.filter(u=>!have.has(u.id));
+      n+=rows.length;for(let i=0;i<rows.length;i+=200)bulk(sh,rows.slice(i,i+200));
+    });
+    toast('Memulihkan '+n+' data...');start();go('set');
+  }catch{toast('File cadangan tidak valid')}};
+  r.onerror=()=>toast('File tidak bisa dibaca');
+  r.readAsText(f);r.onloadend=()=>{try{el.value=''}catch{}};
 }
 
 /* ---------- Mulai ---------- */
